@@ -141,7 +141,7 @@ Translated Hebrew words:
 
 ## Performance Expectations
 
-- **Processing Rate**: 200-400 mappings/second (varies by hardware)
+- **Processing Rate**: ~25k mappings/second (varies by hardware)
 - **Memory Usage**: ~2-4GB RAM during operation
 - **Total Runtime**: Theoretical completion would take millions of years
 - **Practical Usage**: Run until satisfactory results found or specific time limit
