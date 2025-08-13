@@ -1,0 +1,46 @@
+# Visual Studio artifacts
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.tlog/
+*.log
+*.idb
+*.recipe
+*.lastbuildstate
+*.FileListAbsolute.txt
+*.CppClean.log
+
+# Build directories
+x64/
+Debug/
+Release/
+VoynichDecoder/x64/
+
+# Visual Studio user files
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.db
+*.opendb
+
+# State and output files
+*.dat
+voynich_analysis_results.txt
+voynich_decoder_results.txt
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE files
+.vs/
+.vscode/
