@@ -18,6 +18,7 @@ x64/
 Debug/
 Release/
 VoynichDecoder/x64/
+.claude/
 
 # Visual Studio user files
 *.vcxproj.user

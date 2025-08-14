@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36401.2 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VoynichDecoder", "VoynichDecoder.vcxproj", "{8138FBC0-8599-4693-B05C-5EC989EC8BDF}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VoynichDecoderTests", "VoynichDecoderTests.vcxproj", "{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,14 @@ Global
 		{8138FBC0-8599-4693-B05C-5EC989EC8BDF}.Release|x64.Build.0 = Release|x64
 		{8138FBC0-8599-4693-B05C-5EC989EC8BDF}.Release|x86.ActiveCfg = Release|Win32
 		{8138FBC0-8599-4693-B05C-5EC989EC8BDF}.Release|x86.Build.0 = Release|Win32
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Debug|x64.ActiveCfg = Debug|x64
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Debug|x64.Build.0 = Debug|x64
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Debug|x86.ActiveCfg = Debug|Win32
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Debug|x86.Build.0 = Debug|Win32
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Release|x64.ActiveCfg = Release|x64
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Release|x64.Build.0 = Release|x64
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Release|x86.ActiveCfg = Release|Win32
+		{F7D32BD0-2749-483E-9A0D-1F84B89A13E9}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
