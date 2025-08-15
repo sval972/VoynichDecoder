@@ -26,6 +26,7 @@
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.props" Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.props')" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
@@ -104,9 +105,17 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
+      <Runtime>MDd</Runtime>
+      <FastMath>false</FastMath>
+      <Defines>_DEBUG;_CONSOLE;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_CRT_SECURE_NO_WARNINGS;%(Defines)</Defines>
+    </CudaCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>cudart.lib;cublas.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -118,9 +127,17 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
     </ClCompile>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
+      <Runtime>MD</Runtime>
+      <FastMath>false</FastMath>
+      <Defines>NDEBUG;_CONSOLE;%(Defines)</Defines>
+    </CudaCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>cudart.lib;cublas.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -128,7 +145,8 @@
     <ClCompile Include="Word.cpp" />
     <ClCompile Include="WordSet.cpp" />
     <ClCompile Include="Mapping.cpp" />
-    <ClCompile Include="Translator.cpp" />
+    <ClCompile Include="StaticTranslator.cpp" />
+    <CudaCompile Include="StaticCudaTranslator.cu" />
     <ClCompile Include="MappingGenerator.cpp" />
     <ClCompile Include="HebrewValidator.cpp" />
     <ClCompile Include="VoynichDecoder.cpp" />
@@ -137,12 +155,13 @@
     <ClInclude Include="Word.h" />
     <ClInclude Include="WordSet.h" />
     <ClInclude Include="Mapping.h" />
-    <ClInclude Include="Translator.h" />
+    <ClInclude Include="StaticTranslator.h" />
     <ClInclude Include="MappingGenerator.h" />
     <ClInclude Include="HebrewValidator.h" />
     <ClInclude Include="VoynichDecoder.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets" Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets')" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>

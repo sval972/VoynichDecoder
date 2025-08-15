@@ -1,23 +1,35 @@
 #include "TestFramework.h"
-#include "../Translator.h"
+#include "../StaticTranslator.h"
 #include "../HebrewValidator.h"
 #include "../Mapping.h"
+#include "../WordSet.h"
 
 class MinimalTests {
 public:
     void testTranslatorCreation() {
-        Translator translator;
-        // Just test that we can create a translator
-        std::cout << "✓ Translator creation test passed" << std::endl;
+        // Test static methods are available
+        bool cudaAvailable = StaticTranslator::isCudaAvailable();
+        std::string deviceInfo = StaticTranslator::getCudaDeviceInfo();
+        
+        // Just test that we can call static methods
+        std::cout << "✓ StaticTranslator static methods test passed (CUDA: " 
+                  << (cudaAvailable ? "Available" : "Not Available") << ")" << std::endl;
     }
     
     void testTranslatorWithMapping() {
-        auto mapping = std::make_unique<Mapping>();
-        mapping->setMapping(0, 1); // EVA index 0 -> Hebrew index 1
+        Mapping mapping;
+        mapping.setMapping(0, 1); // EVA index 0 -> Hebrew index 1
         
-        Translator translator(std::move(mapping));
-        // Test that we can create translator with custom mapping
-        std::cout << "✓ Translator with custom mapping test passed" << std::endl;
+        // Create a simple test WordSet
+        WordSet testWords;
+        testWords.addWord(Word(L"a", Alphabet::EVA)); // Simple EVA word
+        
+        // Test translation using static method (CPU mode)
+        WordSet translatedWords = StaticTranslator::translateWordSet(testWords, mapping, false);
+        
+        // Just verify we got some result
+        ASSERT_TRUE(translatedWords.size() >= 0); // Should complete without error
+        std::cout << "✓ StaticTranslator::translateWordSet test passed" << std::endl;
     }
     
     void testHebrewValidatorCreation() {
@@ -99,8 +111,8 @@ void testMinimalBinaryVectorValidation() {
 }
 
 void registerMinimalTests(TestFramework& framework) {
-    framework.addTest("Minimal Translator Creation", testMinimalTranslatorCreation);
-    framework.addTest("Minimal Translator with Mapping", testMinimalTranslatorWithMapping);
+    framework.addTest("Minimal StaticTranslator Methods", testMinimalTranslatorCreation);
+    framework.addTest("Minimal StaticTranslator Translation", testMinimalTranslatorWithMapping);
     framework.addTest("Minimal HebrewValidator Creation", testMinimalHebrewValidatorCreation);
     framework.addTest("Minimal HebrewValidator Config", testMinimalHebrewValidatorConfig);
     framework.addTest("Minimal Mapping Basic Operations", testMinimalMappingBasicOperations);

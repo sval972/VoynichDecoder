@@ -232,9 +232,9 @@ private:
         }
     }
 
-public:
-    void runPerfectScoreTest() {
-        std::cout << "=== High Score Integration Test (with Hebrew from Tanah2.txt) ===" << std::endl;
+private:
+    void runPerfectScoreTestWithTranslator(VoynichDecoder::TranslatorType translatorType, const std::string& testName) {
+        std::cout << "=== " << testName << " (with Hebrew from Tanah2.txt) ===" << std::endl;
         
         // Setup test data with matching EVA/Hebrew word pairs
         createMatchingWordPairs();
@@ -250,14 +250,16 @@ public:
         VoynichDecoder::DecoderConfig config;
         config.voynichWordsPath = testVoynichFile;
         config.hebrewLexiconPath = testHebrewFile;  // Use our test Hebrew lexicon
-        config.scoreThreshold = 0.0;    // Low threshold to see all scores
+        config.scoreThreshold = 95.0;    // Low threshold to see all scores
         config.maxMappingsToProcess = 10;  // Process more mappings with 100 words
         config.mappingBlockSize = 15;   // Slightly larger block size
         config.generatorStateFile = testStateFile;
         config.numThreads = 1;  // Single thread for predictable behavior
         config.statusUpdateIntervalMs = 1000;  // Frequent updates
+        config.translatorType = translatorType;
         
-        testResultsFile = "test_perfect_score_results.txt";
+        testResultsFile = std::string("test_perfect_score_results_") + 
+            (translatorType == VoynichDecoder::TranslatorType::CPU ? "cpu" : "cuda") + ".txt";
         config.resultsFilePath = testResultsFile;
         
         try {
@@ -314,7 +316,7 @@ public:
                 std::cout << "No results file created (no scores exceeded threshold)." << std::endl;
             }
             
-            std::cout << "✓ Perfect score integration test passed!" << std::endl;
+            std::cout << "✓ " << testName << " passed!" << std::endl;
             
         } catch (const std::exception& e) {
             std::cout << "Test failed with exception: " << e.what() << std::endl;
@@ -324,13 +326,28 @@ public:
          
         cleanup();
     }
+
+public:
+    void runPerfectScoreTestCPU() {
+        runPerfectScoreTestWithTranslator(VoynichDecoder::TranslatorType::CPU, "Perfect Score Integration Test (CPU)");
+    }
+    
+    void runPerfectScoreTestCUDA() {
+        runPerfectScoreTestWithTranslator(VoynichDecoder::TranslatorType::CUDA, "Perfect Score Integration Test (CUDA)");
+    }
 };
 
-void testPerfectScoreIntegration() {
+void testPerfectScoreIntegrationCPU() {
     PerfectScoreIntegrationTest test;
-    test.runPerfectScoreTest();
+    test.runPerfectScoreTestCPU();
+}
+
+void testPerfectScoreIntegrationCUDA() {
+    PerfectScoreIntegrationTest test;
+    test.runPerfectScoreTestCUDA();
 }
 
 void registerPerfectScoreTest(TestFramework& framework) {
-    framework.addTest("Perfect Score Integration Test", testPerfectScoreIntegration);
+    framework.addTest("Perfect Score Integration Test (CPU)", testPerfectScoreIntegrationCPU);
+    framework.addTest("Perfect Score Integration Test (CUDA)", testPerfectScoreIntegrationCUDA);
 }

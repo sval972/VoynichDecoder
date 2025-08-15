@@ -17,7 +17,8 @@
 x64/
 Debug/
 Release/
-VoynichDecoder/x64/
+VoynichDecoder/
+VoynichD.*/
 .claude/
 
 # Visual Studio user files
@@ -37,6 +38,12 @@ voynich_decoder_results.txt
 *.tmp
 *.temp
 *~
+
+# CUDA build artifacts
+*.cu.obj
+*.cu.cache
+*.deps
+*.device-link.obj
 
 # OS files
 Thumbs.db

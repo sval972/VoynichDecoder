@@ -1,7 +1,7 @@
 #pragma once
 
 #include "MappingGenerator.h"
-#include "Translator.h"
+#include "StaticTranslator.h"
 #include "HebrewValidator.h"
 #include "WordSet.h"
 #include <vector>
@@ -14,9 +14,17 @@
 
 class VoynichDecoder {
 public:
+    // Translator implementation types
+    enum class TranslatorType {
+        CPU,    // Use CPU-based implementation
+        CUDA,   // Use CUDA GPU implementation (falls back to CPU if unavailable)
+        AUTO    // Automatically choose best available (CUDA if available, otherwise CPU)
+    };
+    
     // Configuration for the decoder
     struct DecoderConfig {
         size_t numThreads;                    // Number of worker threads (0 = auto-detect)
+        TranslatorType translatorType;        // Type of translator implementation to use
         std::string voynichWordsPath;         // Path to Voynich manuscript words
         std::string hebrewLexiconPath;        // Path to Hebrew lexicon
         std::string resultsFilePath;          // Path to save results
@@ -30,6 +38,7 @@ public:
         
         DecoderConfig() :
             numThreads(0),  // Auto-detect
+            translatorType(TranslatorType::AUTO),  // Auto-detect best implementation
             voynichWordsPath("resources/Script_freq100.txt"),
             hebrewLexiconPath("resources/Tanah2.txt"),
             resultsFilePath("voynich_decoder_results.txt"),
@@ -75,6 +84,7 @@ private:
     // Core components
     std::unique_ptr<MappingGenerator> mappingGenerator;
     WordSet voynichWords;
+    bool useCudaTranslation;  // Flag to determine if CUDA should be used for translation
     
     // Threading
     std::vector<std::thread> workerThreads;
@@ -103,6 +113,8 @@ private:
     bool loadVoynichWords();
     void setupSignalHandling();
     void cleanupSignalHandling();
+    bool determineTranslatorImplementation(TranslatorType type) const;
+    std::string getTranslatorTypeName(TranslatorType type) const;
     
 public:
     explicit VoynichDecoder(const DecoderConfig& config = DecoderConfig());

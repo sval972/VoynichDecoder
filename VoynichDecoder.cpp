@@ -1,4 +1,5 @@
 #include "VoynichDecoder.h"
+#include "StaticTranslator.h"
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -53,6 +54,12 @@ bool VoynichDecoder::initialize() {
     }
     
     std::wcout << L"Configured for " << config.numThreads << L" worker threads" << std::endl;
+    
+    // Determine translator implementation (static methods - no instance needed)
+    useCudaTranslation = determineTranslatorImplementation(config.translatorType);
+    
+    std::wcout << L"Translator implementation: " << getTranslatorTypeName(config.translatorType).c_str() 
+               << L" (" << (useCudaTranslation ? "CUDA (Static)" : "CPU (Static)") << L")" << std::endl;
     std::wcout << L"Score threshold: " << std::fixed << std::setprecision(1) << config.scoreThreshold << std::endl;
     std::wcout << L"Max mappings to process: " << (config.maxMappingsToProcess > 0 ? 
         std::to_wstring(config.maxMappingsToProcess) : L"unlimited") << std::endl;
@@ -80,6 +87,40 @@ void VoynichDecoder::setupSignalHandling() {
 
 void VoynichDecoder::cleanupSignalHandling() {
     std::signal(SIGINT, SIG_DFL);
+}
+
+bool VoynichDecoder::determineTranslatorImplementation(TranslatorType type) const {
+    switch (type) {
+        case TranslatorType::CPU:
+            return false;  // Use CPU
+            
+        case TranslatorType::CUDA:
+            // Force CUDA - throw exception if not available
+            if (!StaticTranslator::isCudaAvailable()) {
+                throw std::runtime_error("CUDA is not available on this system");
+            }
+            return true;  // Use CUDA
+            
+        case TranslatorType::AUTO:
+            // Auto-select: prefer CUDA if available, otherwise CPU
+            return StaticTranslator::isCudaAvailable();
+            
+        default:
+            return false;  // Default to CPU
+    }
+}
+
+std::string VoynichDecoder::getTranslatorTypeName(TranslatorType type) const {
+    switch (type) {
+        case TranslatorType::CPU:
+            return "CPU";
+        case TranslatorType::CUDA:
+            return "CUDA";
+        case TranslatorType::AUTO:
+            return StaticTranslator::isCudaAvailable() ? "AUTO (CUDA)" : "AUTO (CPU)";
+        default:
+            return "Unknown";
+    }
 }
 
 void VoynichDecoder::start() {
@@ -153,8 +194,7 @@ void VoynichDecoder::waitForCompletion() {
 
 void VoynichDecoder::workerThreadFunction(int threadId) {
     try {
-        // Create per-thread instances
-        Translator translator;
+        // No translator instance needed - using static methods
         
         HebrewValidator::ValidatorConfig validatorConfig;
         validatorConfig.hebrewLexiconPath = config.hebrewLexiconPath;
@@ -196,17 +236,14 @@ void VoynichDecoder::workerThreadFunction(int threadId) {
                 }
             }
             
-            // Set the mapping in the translator
-            translator.setMapping(std::move(mapping));
-            
             // Create mapping ID for tracking
             uint64_t mappingId = stats.totalMappingsProcessed.fetch_add(1);
             
-            // Translate Voynich words to Hebrew
-            WordSet translatedWords = translator.translateWordSet(voynichWords);
+            // Translate Voynich words to Hebrew using static method
+            WordSet translatedWords = StaticTranslator::translateWordSet(voynichWords, *mapping, useCudaTranslation);
             
             // Serialize the mapping for saving
-            std::string mappingVisualization = translator.getMapping().serializeMappingVisualization();
+            std::string mappingVisualization = mapping->serializeMappingVisualization();
             std::vector<uint8_t> mappingData(mappingVisualization.begin(), mappingVisualization.end());
             
             // Validate translation against Hebrew lexicon
