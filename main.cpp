@@ -1,4 +1,4 @@
-#include "VoynichDecoder.h"
+#include "ThreadManager.h"
 #include "StaticTranslator.h"
 #include <iostream>
 #include <locale>
@@ -29,17 +29,17 @@ int main()
     }
     std::wcout << std::endl;
     
-    // Configure the decoder
-    VoynichDecoder::DecoderConfig config;
-    config.numThreads = 6;  // 0 - Auto-detect optimal thread count
+    // Configure the thread manager
+    ThreadManager::ThreadManagerConfig config;
+    config.numThreads = 10;  // 0 - Auto-detect optimal thread count
     
     // Choose translator implementation
     // Options: VoynichDecoder::TranslatorType::CPU, CUDA, or AUTO
     //config.translatorType = VoynichDecoder::TranslatorType::AUTO;  // Let system choose best
     
     // Alternative configurations:
-     //config.translatorType = VoynichDecoder::TranslatorType::CPU;   // Force CPU implementation
-     config.translatorType = VoynichDecoder::TranslatorType::CUDA;  // Force CUDA (will throw exception if unavailable)
+     config.translatorType = VoynichDecoder::TranslatorType::CPU;   // Force CPU implementation
+     //config.translatorType = VoynichDecoder::TranslatorType::CUDA;  // Force CUDA (will throw exception if unavailable)
     
     // Note: If you force CUDA on a system without CUDA, the decoder will throw an exception
     // Use AUTO for automatic fallback to CPU when CUDA is not available
@@ -49,13 +49,13 @@ int main()
     config.resultsFilePath = "voynich_analysis_results.txt";
     config.scoreThreshold = 45.0;  // Save results with 45%+ Hebrew word matches
     config.statusUpdateIntervalMs = 5000;  // Status update every 5 seconds
-    config.maxMappingsToProcess = 0;  // Unlimited for long-running analysis
+    config.maxMappingsToProcess = 0;  // Limited for batch CUDA performance testing
     config.mappingBlockSize = 1000000;  // 1M mappings per generator block
     
-    // Create and run the decoder with exception handling
+    // Create and run the thread manager with exception handling
     try {
-        VoynichDecoder decoder(config);
-        decoder.runDecoding();
+        ThreadManager threadManager(config);
+        threadManager.runDecoding();
         
         std::wcout << L"\nVoynich Decoder completed. Check " << config.resultsFilePath.c_str() 
                    << L" for any high-scoring translation results." << std::endl;

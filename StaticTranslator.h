@@ -25,15 +25,24 @@ public:
     static bool validateInputAlphabet(const WordSet& words);
     static std::string getCudaDeviceInfo();
     static bool isCudaAvailable();
-
-private:
-    // Internal utility methods
+    
+    // Matrix conversion utilities (public for batch processing)
     static std::vector<std::vector<int>> wordSetToMatrix(const WordSet& words);
     static WordSet matrixToWordSet(
         const std::vector<std::vector<int>>& matrix,
         const WordSet& originalWords,
         Alphabet targetAlphabet
     );
+    
+    // High-performance batch processing for multiple mappings
+    static void performBatchMatrixMultiplicationCuda(
+        const std::vector<std::vector<int>>& inputMatrix,
+        const std::vector<std::vector<std::vector<int>>>& transformMatrices,
+        std::vector<std::vector<std::vector<int>>>& resultMatrices
+    );
+
+private:
+    // Internal utility methods
     static std::wstring binaryToHebrewText(const std::vector<int>& binaryVector);
     static size_t getOptimalThreadCount();
     

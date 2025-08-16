@@ -11,9 +11,9 @@ void testMappingGeneratorConstruction() {
     MappingGenerator generator(config);
     
     auto state = generator.getCurrentState();
-    ASSERT_EQ(0ULL, state.blockIndex);
-    ASSERT_EQ(0ULL, state.mappingIndexInBlock);
-    ASSERT_EQ(0ULL, state.totalMappingsGenerated);
+    ASSERT_EQ(0ULL, state.nextBlockToGenerate);
+    ASSERT_EQ(0ULL, state.totalBlocksGenerated);
+    ASSERT_EQ(0ULL, state.totalBlocksCompleted);
     ASSERT_FALSE(state.isComplete);
 }
 
@@ -25,61 +25,55 @@ void testMappingGeneratorDefaultConstruction() {
     MappingGenerator generator(config);
     
     auto state = generator.getCurrentState();
-    ASSERT_EQ(0ULL, state.blockIndex);
-    ASSERT_EQ(0ULL, state.mappingIndexInBlock);
-    ASSERT_EQ(0ULL, state.totalMappingsGenerated);
+    ASSERT_EQ(0ULL, state.nextBlockToGenerate);
+    ASSERT_EQ(0ULL, state.totalBlocksGenerated);
+    ASSERT_EQ(0ULL, state.totalBlocksCompleted);
     ASSERT_FALSE(state.isComplete);
 }
 
-void testGetNextMapping() {
-    MappingGenerator::GeneratorConfig config;
-    config.blockSize = 2;
-    config.enableStateFile = false;
-    
-    MappingGenerator generator(config);
-    
-    auto mapping1 = generator.getNextMapping();
-    ASSERT_NOT_NULL(mapping1.get());
-    
-    auto state1 = generator.getCurrentState();
-    ASSERT_EQ(0ULL, state1.totalMappingsGenerated);
-    
-    auto mapping2 = generator.getNextMapping();
-    ASSERT_NOT_NULL(mapping2.get());
-    
-    auto state2 = generator.getCurrentState();
-    ASSERT_EQ(0ULL, state2.totalMappingsGenerated);
-    
-    auto mapping3 = generator.getNextMapping();
-    ASSERT_NOT_NULL(mapping3.get());
-    
-    auto state3 = generator.getCurrentState();
-    ASSERT_EQ(2ULL, state3.totalMappingsGenerated);
-}
-
-void testMultipleGetNextMapping() {
+void testGetNextBlock() {
     MappingGenerator::GeneratorConfig config;
     config.blockSize = 3;
     config.enableStateFile = false;
     
     MappingGenerator generator(config);
     
-    // Get 3 mappings (exhaust first block)
-    for (int i = 0; i < 3; i++) {
-        auto mapping = generator.getNextMapping();
-        ASSERT_NOT_NULL(mapping.get());
-    }
+    // Get first block for thread 0
+    auto block1 = generator.getNextBlock(0);
+    ASSERT_EQ(3ULL, block1.size()); // Should have 3 mappings
     
-    // After exhausting the first block, totalMappingsGenerated should still be 0
     auto state1 = generator.getCurrentState();
-    ASSERT_EQ(0ULL, state1.totalMappingsGenerated);
+    ASSERT_EQ(1ULL, state1.nextBlockToGenerate);
+    ASSERT_EQ(1ULL, state1.totalBlocksGenerated);
     
-    // Get one more mapping (triggers refill and increments counter)
-    auto mapping4 = generator.getNextMapping();
-    ASSERT_NOT_NULL(mapping4.get());
+    // Get second block for thread 1
+    auto block2 = generator.getNextBlock(1);
+    ASSERT_EQ(3ULL, block2.size()); // Should have 3 mappings
     
     auto state2 = generator.getCurrentState();
-    ASSERT_EQ(3ULL, state2.totalMappingsGenerated);
+    ASSERT_EQ(2ULL, state2.nextBlockToGenerate);
+    ASSERT_EQ(2ULL, state2.totalBlocksGenerated);
+}
+
+void testMultipleGetNextBlock() {
+    MappingGenerator::GeneratorConfig config;
+    config.blockSize = 2;
+    config.enableStateFile = false;
+    
+    MappingGenerator generator(config);
+    
+    // Get blocks for multiple threads
+    auto block1 = generator.getNextBlock(0);
+    auto block2 = generator.getNextBlock(1);
+    auto block3 = generator.getNextBlock(2);
+    
+    ASSERT_EQ(2ULL, block1.size());
+    ASSERT_EQ(2ULL, block2.size());
+    ASSERT_EQ(2ULL, block3.size());
+    
+    auto state = generator.getCurrentState();
+    ASSERT_EQ(3ULL, state.nextBlockToGenerate);
+    ASSERT_EQ(3ULL, state.totalBlocksGenerated);
 }
 
 void testIsGenerationComplete() {
@@ -91,7 +85,7 @@ void testIsGenerationComplete() {
     
     ASSERT_FALSE(generator.isGenerationComplete());
     
-    generator.getNextMapping();
+    generator.getNextBlock(0);
     ASSERT_FALSE(generator.isGenerationComplete());
 }
 
@@ -102,7 +96,7 @@ void testGetTotalCombinations() {
 
 void testGetProgressPercentage() {
     MappingGenerator::GeneratorConfig config;
-    config.blockSize = 2;
+    config.blockSize = 1000000;  // Use a larger block size for realistic progress
     config.enableStateFile = false;
     
     MappingGenerator generator(config);
@@ -110,10 +104,11 @@ void testGetProgressPercentage() {
     double initialProgress = generator.getProgressPercentage();
     TestFramework::assertEquals(0.0, initialProgress, 0.001, "Initial progress should be 0.0");
     
-    // Exhaust first block to trigger progress update
-    generator.getNextMapping();
-    generator.getNextMapping();
-    generator.getNextMapping(); // This triggers refill and progress update
+    // Get first block
+    generator.getNextBlock(0);
+    
+    // Complete the block to update progress
+    generator.completeBlockForTesting(0);
     
     double progressAfterBlock = generator.getProgressPercentage();
     ASSERT_TRUE(progressAfterBlock > 0.0);
@@ -122,7 +117,7 @@ void testGetProgressPercentage() {
 
 void testGetRemainingMappings() {
     MappingGenerator::GeneratorConfig config;
-    config.blockSize = 3;
+    config.blockSize = 1000000;
     config.enableStateFile = false;
     
     MappingGenerator generator(config);
@@ -131,14 +126,14 @@ void testGetRemainingMappings() {
     uint64_t remaining = generator.getRemainingMappings();
     ASSERT_EQ(totalCombinations, remaining);
     
-    // Exhaust first block to update counter
-    generator.getNextMapping();
-    generator.getNextMapping();
-    generator.getNextMapping();
-    generator.getNextMapping(); // This triggers refill
+    // Get first block 
+    generator.getNextBlock(0);
+    
+    // Complete the block to update remaining count
+    generator.completeBlockForTesting(0);
     
     uint64_t remainingAfterBlock = generator.getRemainingMappings();
-    ASSERT_EQ(totalCombinations - 3, remainingAfterBlock);
+    ASSERT_EQ(totalCombinations - 1000000, remainingAfterBlock);
 }
 
 void testGetBlockStatus() {
@@ -150,15 +145,13 @@ void testGetBlockStatus() {
     
     auto blockStatus = generator.getBlockStatus();
     ASSERT_EQ(5ULL, blockStatus.blockSize);
-    ASSERT_EQ(0ULL, blockStatus.currentPosition);
-    ASSERT_EQ(5ULL, blockStatus.remainingInBlock);
-    ASSERT_EQ(0ULL, blockStatus.blockIndex);
+    ASSERT_EQ(0ULL, blockStatus.nextBlockToGenerate);
+    ASSERT_EQ(0ULL, blockStatus.completedBlocks);
     
-    generator.getNextMapping();
+    generator.getNextBlock(0);
     
     auto blockStatusAfter = generator.getBlockStatus();
-    ASSERT_EQ(1ULL, blockStatusAfter.currentPosition);
-    ASSERT_EQ(4ULL, blockStatusAfter.remainingInBlock);
+    ASSERT_EQ(1ULL, blockStatusAfter.nextBlockToGenerate);
 }
 
 void testReset() {
@@ -168,29 +161,28 @@ void testReset() {
     
     MappingGenerator generator(config);
     
-    // Exhaust first block to get meaningful state
-    generator.getNextMapping();
-    generator.getNextMapping();
-    generator.getNextMapping(); // Triggers refill
+    // Get some blocks to change state
+    generator.getNextBlock(0);
+    generator.getNextBlock(1);
     
     auto stateBefore = generator.getCurrentState();
-    ASSERT_EQ(2ULL, stateBefore.totalMappingsGenerated);
+    ASSERT_EQ(2ULL, stateBefore.totalBlocksGenerated);
     
     generator.reset();
     
     auto stateAfter = generator.getCurrentState();
-    ASSERT_EQ(0ULL, stateAfter.blockIndex);
-    ASSERT_EQ(0ULL, stateAfter.mappingIndexInBlock);
-    ASSERT_EQ(0ULL, stateAfter.totalMappingsGenerated);
+    ASSERT_EQ(0ULL, stateAfter.nextBlockToGenerate);
+    ASSERT_EQ(0ULL, stateAfter.totalBlocksGenerated);
+    ASSERT_EQ(0ULL, stateAfter.totalBlocksCompleted);
     ASSERT_FALSE(stateAfter.isComplete);
 }
 
 void testGeneratorStateStructure() {
     MappingGenerator::GeneratorState state;
     
-    ASSERT_EQ(0ULL, state.blockIndex);
-    ASSERT_EQ(0ULL, state.mappingIndexInBlock);
-    ASSERT_EQ(0ULL, state.totalMappingsGenerated);
+    ASSERT_EQ(0ULL, state.nextBlockToGenerate);
+    ASSERT_EQ(0ULL, state.totalBlocksGenerated);
+    ASSERT_EQ(0ULL, state.totalBlocksCompleted);
     ASSERT_FALSE(state.isComplete);
 }
 
@@ -198,32 +190,28 @@ void testGeneratorConfigStructure() {
     MappingGenerator::GeneratorConfig config;
     
     ASSERT_EQ(1000000ULL, config.blockSize);
-    ASSERT_TRUE(config.stateFilePath == "mapping_generator_state.dat");
+    ASSERT_TRUE(config.stateFilePath == "mapping_generator_state.json");
     ASSERT_TRUE(config.enableStateFile);
 }
 
-void testBlockRefill() {
+void testBlockGeneration() {
     MappingGenerator::GeneratorConfig config;
     config.blockSize = 3;
     config.enableStateFile = false;
     
     MappingGenerator generator(config);
     
-    for (int i = 0; i < 3; i++) {
-        auto mapping = generator.getNextMapping();
+    auto block = generator.getNextBlock(0);
+    ASSERT_EQ(3ULL, block.size());
+    
+    // Verify each mapping is valid
+    for (const auto& mapping : block) {
         ASSERT_NOT_NULL(mapping.get());
+        // Verify mapping matrix is valid 27x27
+        const auto& matrix = mapping->getMappingMatrix();
+        ASSERT_EQ(27ULL, matrix.size());
+        ASSERT_EQ(27ULL, matrix[0].size());
     }
-    
-    auto blockStatus = generator.getBlockStatus();
-    ASSERT_EQ(3ULL, blockStatus.currentPosition);
-    ASSERT_EQ(0ULL, blockStatus.remainingInBlock);
-    
-    auto nextMapping = generator.getNextMapping();
-    ASSERT_NOT_NULL(nextMapping.get());
-    
-    auto newBlockStatus = generator.getBlockStatus();
-    ASSERT_EQ(1ULL, newBlockStatus.blockIndex);
-    ASSERT_EQ(1ULL, newBlockStatus.currentPosition);
 }
 
 void testThreadSafety() {
@@ -233,30 +221,64 @@ void testThreadSafety() {
     
     MappingGenerator generator(config);
     
-    std::vector<std::unique_ptr<Mapping>> mappings;
-    // Get 10 mappings (will exhaust 2 blocks: 5 + 5)
-    for (int i = 0; i < 10; i++) {
-        auto mapping = generator.getNextMapping();
-        ASSERT_NOT_NULL(mapping.get());
-        mappings.push_back(std::move(mapping));
+    // Get blocks for different threads simultaneously
+    std::vector<std::vector<std::unique_ptr<Mapping>>> blocks;
+    
+    for (int threadId = 0; threadId < 4; threadId++) {
+        auto block = generator.getNextBlock(threadId);
+        ASSERT_EQ(5ULL, block.size());
+        blocks.push_back(std::move(block));
     }
     
     auto state = generator.getCurrentState();
-    ASSERT_EQ(5ULL, state.totalMappingsGenerated); // First block completed
+    ASSERT_EQ(4ULL, state.totalBlocksGenerated);
+    ASSERT_EQ(4ULL, state.nextBlockToGenerate);
+}
+
+void testBlockWindowManagement() {
+    MappingGenerator::GeneratorConfig config;
+    config.blockSize = 3;
+    config.enableStateFile = false;
     
-    // Get one more to trigger second block completion
-    auto extraMapping = generator.getNextMapping();
-    ASSERT_NOT_NULL(extraMapping.get());
+    MappingGenerator generator(config);
     
-    auto finalState = generator.getCurrentState();
-    ASSERT_EQ(10ULL, finalState.totalMappingsGenerated); // Two blocks completed
+    // Get blocks for multiple threads
+    generator.getNextBlock(0);
+    generator.getNextBlock(1);
+    generator.getNextBlock(2);
+    
+    auto blockStatus = generator.getBlockStatus();
+    ASSERT_EQ(3ULL, blockStatus.nextBlockToGenerate);
+    ASSERT_TRUE(blockStatus.windowSize > 0);  // Should have blocks in window
+}
+
+void testStateConsistency() {
+    MappingGenerator::GeneratorConfig config;
+    config.blockSize = 10;
+    config.enableStateFile = false;
+    
+    MappingGenerator generator(config);
+    
+    // Get initial state
+    auto initialState = generator.getCurrentState();
+    
+    // Get a block
+    auto block = generator.getNextBlock(0);
+    
+    // Check state consistency
+    auto newState = generator.getCurrentState();
+    ASSERT_EQ(initialState.totalBlocksGenerated + 1, newState.totalBlocksGenerated);
+    ASSERT_EQ(initialState.nextBlockToGenerate + 1, newState.nextBlockToGenerate);
+    
+    // Verify block size
+    ASSERT_EQ(10ULL, block.size());
 }
 
 void registerMappingGeneratorTests(TestFramework& framework) {
     framework.addTest("MappingGenerator Construction", testMappingGeneratorConstruction);
     framework.addTest("MappingGenerator Default Construction", testMappingGeneratorDefaultConstruction);
-    framework.addTest("Get Next Mapping", testGetNextMapping);
-    framework.addTest("Multiple Get Next Mapping", testMultipleGetNextMapping);
+    framework.addTest("Get Next Block", testGetNextBlock);
+    framework.addTest("Multiple Get Next Block", testMultipleGetNextBlock);
     framework.addTest("Is Generation Complete", testIsGenerationComplete);
     framework.addTest("Get Total Combinations", testGetTotalCombinations);
     framework.addTest("Get Progress Percentage", testGetProgressPercentage);
@@ -265,6 +287,8 @@ void registerMappingGeneratorTests(TestFramework& framework) {
     framework.addTest("Reset Generator", testReset);
     framework.addTest("Generator State Structure", testGeneratorStateStructure);
     framework.addTest("Generator Config Structure", testGeneratorConfigStructure);
-    framework.addTest("Block Refill", testBlockRefill);
+    framework.addTest("Block Generation", testBlockGeneration);
     framework.addTest("Thread Safety Basic", testThreadSafety);
+    framework.addTest("Block Window Management", testBlockWindowManagement);
+    framework.addTest("State Consistency", testStateConsistency);
 }

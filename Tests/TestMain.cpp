@@ -5,6 +5,7 @@
 void registerMappingGeneratorTests(TestFramework& framework);
 void registerMinimalTests(TestFramework& framework);
 void registerPerfectScoreTest(TestFramework& framework);
+void registerBatchCudaTests(TestFramework& framework);
 
 int main() {
     std::cout << "VoynichDecoder Unit Tests" << std::endl;
@@ -15,7 +16,8 @@ int main() {
     // Register all test suites
     registerPerfectScoreTest(testFramework);
     registerMappingGeneratorTests(testFramework);
-    registerMinimalTests(testFramework);    
+    registerMinimalTests(testFramework);
+    registerBatchCudaTests(testFramework);    
     
     testFramework.runAllTests();
     testFramework.printResults();

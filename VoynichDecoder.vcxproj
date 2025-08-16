@@ -150,6 +150,8 @@
     <ClCompile Include="MappingGenerator.cpp" />
     <ClCompile Include="HebrewValidator.cpp" />
     <ClCompile Include="VoynichDecoder.cpp" />
+    <ClCompile Include="ThreadManager.cpp" />
+    <ClCompile Include="StatsProvider.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Word.h" />
@@ -159,6 +161,8 @@
     <ClInclude Include="MappingGenerator.h" />
     <ClInclude Include="HebrewValidator.h" />
     <ClInclude Include="VoynichDecoder.h" />
+    <ClInclude Include="ThreadManager.h" />
+    <ClInclude Include="StatsProvider.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets" Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets')" />

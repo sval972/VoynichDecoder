@@ -7,8 +7,6 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <shared_mutex>
-#include <atomic>
 #include <fstream>
 #include <cstdint>
 
@@ -52,20 +50,17 @@ public:
     };
 
 private:
-    // Shared Hebrew lexicon (single instance across all validator instances)
-    struct SharedLexicon {
+    // Instance-specific Hebrew lexicon (each validator has its own copy)
+    struct Lexicon {
         std::unordered_set<uint32_t> binaryHashes;     // 32-bit hashes of Hebrew word binary vectors
         std::unordered_set<uint64_t> binarySignatures; // 64-bit signatures for collision detection
         size_t wordCount;                              // Total Hebrew words loaded
-        mutable std::shared_mutex lexiconMutex;        // Protects lexicon during loading
-        std::atomic<bool> isLoaded;                    // Loading completion flag
+        bool isLoaded;                                 // Loading completion flag
         
-        SharedLexicon() : wordCount(0), isLoaded(false) {}
+        Lexicon() : wordCount(0), isLoaded(false) {}
     };
     
-    static std::shared_ptr<SharedLexicon> sharedLexicon; // Global shared lexicon
-    static std::once_flag lexiconInitFlag;               // Ensures single initialization
-    
+    Lexicon lexicon;                          // Instance lexicon (no thread safety needed)
     ValidatorConfig config;                   // Instance configuration
     mutable std::mutex resultsMutex;          // Protects results file operations
     
@@ -74,7 +69,6 @@ private:
     static uint64_t binaryVectorToSignature(const std::vector<int>& binaryVector);
     
     // Lexicon management
-    static void initializeSharedLexicon(const std::string& lexiconPath);
     bool loadHebrewLexicon(const std::string& filePath);
     
     // Scoring and persistence
@@ -100,6 +94,9 @@ public:
     
     // Check if lexicon is loaded and ready
     bool isLexiconReady() const;
+    
+    // Initialize lexicon for this instance
+    bool initializeLexicon();
     
     // Get lexicon statistics
     struct LexiconStats {

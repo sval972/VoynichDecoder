@@ -1,6 +1,9 @@
 #include "TestFramework.h"
+#include "../ThreadManager.h"
 #include "../VoynichDecoder.h"
 #include "../MappingGenerator.h"
+#include "../WordSet.h"
+#include "../Mapping.h"
 #include <fstream>
 #include <vector>
 #include <string>
@@ -135,7 +138,7 @@ private:
         
         // Debug: Show first few mappings
         std::cout << "Sample Hebrew -> EVA mappings from real Tanah2.txt words:" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(5), hebrewWords.size()); ++i) {
+        for (size_t i = 0; i < (hebrewWords.size() < 5 ? hebrewWords.size() : 5); ++i) {
             std::cout << "  " << hebrewWords[i] << " -> " << evaWords[i] << std::endl;
         }
         
@@ -184,43 +187,33 @@ private:
     }
     
     void createIdentityMappingStateFile() {
-        testStateFile = "test_mapping_state.dat";
+        testStateFile = "test_mapping_state.json";
         
+        // Create JSON state file that starts at block 0 for identity mapping
         // The identity mapping corresponds to global index 0 in the factorial number system
         // Global index 0 means: permutation [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]
         // This is in block 0 (since startIndex = blockIndex * blockSize, and 0 / blockSize = 0)
-        // Position within block 0 = 0 % blockSize = 0
         
-        MappingGenerator::GeneratorState state;
-        state.blockIndex = 0;           // Identity mapping is in block 0
-        state.mappingIndexInBlock = 0;  // Identity mapping is at position 0 in block 0  
-        state.totalMappingsGenerated = 0; // No mappings have been generated yet
-        state.isComplete = false;       // Generation is not complete
+        // Manual JSON construction (nlohmann/json not available)
+        std::string stateJson = R"({
+  "generator_state": {
+    "nextBlockToGenerate": 0,
+    "oldestTrackedBlock": 0,
+    "totalBlocksGenerated": 0,
+    "totalBlocksCompleted": 0,
+    "isComplete": false
+  },
+  "block_window": [],
+  "config": {
+    "blockSize": 15
+  }
+})";
         
-        std::ofstream stateFile(testStateFile, std::ios::binary);
-        stateFile.write(reinterpret_cast<const char*>(&state.blockIndex), sizeof(state.blockIndex));
-        stateFile.write(reinterpret_cast<const char*>(&state.mappingIndexInBlock), sizeof(state.mappingIndexInBlock));
-        stateFile.write(reinterpret_cast<const char*>(&state.totalMappingsGenerated), sizeof(state.totalMappingsGenerated));
-        stateFile.write(reinterpret_cast<const char*>(&state.isComplete), sizeof(state.isComplete));
-        stateFile.close();
+        std::ofstream file(testStateFile);
+        file << stateJson;
+        file.close();
         
         std::cout << "Created state file to start at block 0, position 0 (identity mapping)" << std::endl;
-        
-        // Verify the state file was created correctly
-        std::ifstream verifyFile(testStateFile, std::ios::binary);
-        if (verifyFile.good()) {
-            MappingGenerator::GeneratorState readState;
-            verifyFile.read(reinterpret_cast<char*>(&readState.blockIndex), sizeof(readState.blockIndex));
-            verifyFile.read(reinterpret_cast<char*>(&readState.mappingIndexInBlock), sizeof(readState.mappingIndexInBlock));
-            verifyFile.read(reinterpret_cast<char*>(&readState.totalMappingsGenerated), sizeof(readState.totalMappingsGenerated));
-            verifyFile.read(reinterpret_cast<char*>(&readState.isComplete), sizeof(readState.isComplete));
-            verifyFile.close();
-            
-            std::cout << "Verified state file: blockIndex=" << readState.blockIndex 
-                      << ", mappingIndexInBlock=" << readState.mappingIndexInBlock 
-                      << ", totalGenerated=" << readState.totalMappingsGenerated 
-                      << ", complete=" << readState.isComplete << std::endl;
-        }
     }
     
     void cleanup() {
@@ -246,8 +239,8 @@ private:
         std::cout << "Using real long Hebrew biblical words from Tanah2.txt with EVA patterns" << std::endl;
         std::cout << "MappingGenerator positioned to produce identity mapping (global index 0)" << std::endl;
         
-        // Configure decoder to find the perfect score with identity mapping
-        VoynichDecoder::DecoderConfig config;
+        // Configure ThreadManager to find the perfect score with identity mapping
+        ThreadManager::ThreadManagerConfig config;
         config.voynichWordsPath = testVoynichFile;
         config.hebrewLexiconPath = testHebrewFile;  // Use our test Hebrew lexicon
         config.scoreThreshold = 95.0;    // Low threshold to see all scores
@@ -263,24 +256,15 @@ private:
         config.resultsFilePath = testResultsFile;
         
         try {
-            VoynichDecoder decoder(config);
+            ThreadManager threadManager(config);
             
-            std::cout << "Initializing decoder..." << std::endl;
-            ASSERT_TRUE(decoder.initialize());
+            std::cout << "Starting ThreadManager..." << std::endl;
             
-            std::cout << "Starting decoding process..." << std::endl;
+            // Run the decoding process (this will block until completion or limit reached)
+            threadManager.runDecoding();
             
-            // Start decoder in a controlled way
-            decoder.start();
-            
-            // Wait for processing (should be quick with identity mapping)
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            
-            // Stop decoder
-            decoder.stop();
-            decoder.waitForCompletion();
-            
-            auto stats = decoder.getCurrentStats();
+            // Get final stats
+            auto stats = threadManager.getCurrentStats();
             
             std::cout << "Decoding completed!" << std::endl;
             std::cout << "Mappings processed: " << stats.totalMappingsProcessed << std::endl;

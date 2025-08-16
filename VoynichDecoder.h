@@ -1,16 +1,14 @@
 #pragma once
 
-#include "MappingGenerator.h"
 #include "StaticTranslator.h"
 #include "HebrewValidator.h"
 #include "WordSet.h"
+#include "Mapping.h"
+#include "MappingGenerator.h"
 #include <vector>
-#include <thread>
-#include <atomic>
-#include <mutex>
 #include <chrono>
 #include <memory>
-#include <csignal>
+#include <functional>
 
 class VoynichDecoder {
 public:
@@ -23,139 +21,97 @@ public:
     
     // Configuration for the decoder
     struct DecoderConfig {
-        size_t numThreads;                    // Number of worker threads (0 = auto-detect)
-        TranslatorType translatorType;        // Type of translator implementation to use
-        std::string voynichWordsPath;         // Path to Voynich manuscript words
         std::string hebrewLexiconPath;        // Path to Hebrew lexicon
+        std::string voynichWordsPath;         // Path to Voynich manuscript words
         std::string resultsFilePath;          // Path to save results
         double scoreThreshold;                // Minimum score to save results
-        size_t statusUpdateIntervalMs;        // How often to print status (milliseconds)
-        size_t maxMappingsToProcess;          // Maximum mappings to process (0 = unlimited)
-        
-        // MappingGenerator configuration
-        size_t mappingBlockSize;              // Mappings per block in generator
-        std::string generatorStateFile;       // Generator state persistence file
+        TranslatorType translatorType;        // Type of translator implementation to use
         
         DecoderConfig() :
-            numThreads(0),  // Auto-detect
-            translatorType(TranslatorType::AUTO),  // Auto-detect best implementation
-            voynichWordsPath("resources/Script_freq100.txt"),
             hebrewLexiconPath("resources/Tanah2.txt"),
+            voynichWordsPath("resources/Script_freq100.txt"),
             resultsFilePath("voynich_decoder_results.txt"),
             scoreThreshold(25.0),
-            statusUpdateIntervalMs(5000),  // 5 seconds
-            maxMappingsToProcess(0),  // Unlimited
-            mappingBlockSize(1000000),
-            generatorStateFile("voynich_decoder_state.dat") {}
+            translatorType(TranslatorType::AUTO) {}
     };
     
-    // Real-time statistics
-    struct DecoderStats {
-        std::atomic<uint64_t> totalMappingsProcessed{0};
-        std::atomic<uint64_t> totalWordsValidated{0};
-        std::atomic<double> highestScore{0.0};
-        std::atomic<uint64_t> highScoreCount{0};
-        std::chrono::steady_clock::time_point startTime;
-        std::chrono::steady_clock::time_point lastUpdateTime;
+    // Processing result structure
+    struct ProcessingResult {
+        uint64_t mappingId;
+        size_t totalWords;
+        size_t matchedWords;
+        double score;
+        double matchPercentage;
+        bool isHighScore;
         
-        DecoderStats() {
-            auto now = std::chrono::steady_clock::now();
-            startTime = now;
-            lastUpdateTime = now;
-        }
-        
-        double getMappingsPerSecond() const {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-            return (elapsed > 0) ? (totalMappingsProcessed.load() * 1000.0 / elapsed) : 0.0;
-        }
-        
-        double getElapsedMinutes() const {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - startTime).count();
-            return static_cast<double>(elapsed);
-        }
+        ProcessingResult() : mappingId(0), totalWords(0), matchedWords(0), 
+                           score(0.0), matchPercentage(0.0), isHighScore(false) {}
     };
 
 private:
     DecoderConfig config;
-    DecoderStats stats;
     
     // Core components
-    std::unique_ptr<MappingGenerator> mappingGenerator;
+    std::unique_ptr<HebrewValidator> validator;
     WordSet voynichWords;
-    bool useCudaTranslation;  // Flag to determine if CUDA should be used for translation
+    uint64_t nextMappingId;
+    bool useCudaTranslation;
     
-    // Threading
-    std::vector<std::thread> workerThreads;
-    std::atomic<bool> shouldStop{false};
-    std::atomic<bool> isRunning{false};
+    // Thread-local performance tracking (to minimize StatsProvider contention)
+    struct ThreadStats {
+        uint64_t localMappingsProcessed = 0;
+        uint64_t localWordsValidated = 0;
+        double localHighestScore = 0.0;
+        bool hasHighScore = false;
+        std::chrono::steady_clock::time_point lastReportTime;
+        
+        ThreadStats() : lastReportTime(std::chrono::steady_clock::now()) {}
+    };
+    ThreadStats threadStats;
     
-    // Thread synchronization
-    mutable std::mutex statsMutex;
-    mutable std::mutex printMutex;
-    
-    // Signal handling
-    static std::atomic<bool> signalReceived;
-    static VoynichDecoder* instance;
-    static void signalHandler(int signal);
-    
-    // Worker thread function
-    void workerThreadFunction(int threadId);
-    
-    // Status reporting
-    void statusReportingThread();
-    void printStatus() const;
-    void printFinalResults() const;
-    
-    // Utilities
-    size_t getOptimalThreadCount() const;
+    // Private helper methods
     bool loadVoynichWords();
-    void setupSignalHandling();
-    void cleanupSignalHandling();
-    bool determineTranslatorImplementation(TranslatorType type) const;
+    bool determineTranslatorImplementation(TranslatorType type);
     std::string getTranslatorTypeName(TranslatorType type) const;
+    
+    // Batch processing for CUDA optimization
+    void processMappingsBatch(const std::vector<std::unique_ptr<Mapping>>& mappings,
+                             std::function<void(const ProcessingResult&)> resultCallback,
+                             std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback,
+                             int threadId,
+                             std::function<bool()> shouldStopCallback);
     
 public:
     explicit VoynichDecoder(const DecoderConfig& config = DecoderConfig());
-    ~VoynichDecoder();
+    ~VoynichDecoder() = default;
     
     // Main decoder operations
     bool initialize();
-    void start();
-    void stop();
-    void waitForCompletion();
     
-    // Non-atomic stats for returning values
-    struct StatsSummary {
-        uint64_t totalMappingsProcessed;
-        uint64_t totalWordsValidated;
-        double highestScore;
-        uint64_t highScoreCount;
-        std::chrono::steady_clock::time_point startTime;
-        std::chrono::steady_clock::time_point lastUpdateTime;
-        
-        double getMappingsPerSecond() const {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-            return (elapsed > 0) ? (totalMappingsProcessed * 1000.0 / elapsed) : 0.0;
-        }
-        
-        double getElapsedMinutes() const {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(now - startTime).count();
-            return static_cast<double>(elapsed);
-        }
-    };
-
-    // Status and control
-    bool isDecoderRunning() const { return isRunning.load(); }
-    StatsSummary getCurrentStats() const;
+    // Process a single mapping (original method for backwards compatibility)
+    ProcessingResult processMapping(const WordSet& voynichWords, const Mapping& mapping, bool useCuda = false);
+    
+    // Process a single mapping using internal Voynich words
+    ProcessingResult processMapping(const Mapping& mapping);
+    
+    // Process multiple mappings using a callback for results
+    void processMappings(const std::vector<std::unique_ptr<Mapping>>& mappings, 
+                        std::function<void(const ProcessingResult&)> resultCallback);
+    
+    // Process a block of mappings from generator
+    void processMappingBlock(MappingGenerator& generator, int threadId,
+                           std::function<void(const ProcessingResult&)> resultCallback,
+                           std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback,
+                           std::function<bool()> shouldStopCallback = nullptr);
     
     // Configuration access
     const DecoderConfig& getConfig() const { return config; }
-    void updateScoreThreshold(double newThreshold) { config.scoreThreshold = newThreshold; }
+    void updateScoreThreshold(double newThreshold);
     
-    // Convenience method for complete run
-    void runDecoding();
+    // Access to internal state
+    const WordSet& getVoynichWords() const { return voynichWords; }
+    bool isUsingCudaTranslation() const { return useCudaTranslation; }
+    
+    // Performance tracking
+    void reportBatchStatsIfNeeded(std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback, int threadId, bool force = false);
 };

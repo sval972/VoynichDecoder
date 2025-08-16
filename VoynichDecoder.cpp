@@ -1,37 +1,14 @@
 #include "VoynichDecoder.h"
-#include "StaticTranslator.h"
+#include "WordSet.h"
 #include <iostream>
 #include <iomanip>
+#include <thread>
 #include <algorithm>
 
-// Static member definitions
-std::atomic<bool> VoynichDecoder::signalReceived{false};
-VoynichDecoder* VoynichDecoder::instance = nullptr;
-
-VoynichDecoder::VoynichDecoder(const DecoderConfig& config) : config(config) {
-    instance = this;
-}
-
-VoynichDecoder::~VoynichDecoder() {
-    stop();
-    cleanupSignalHandling();
-    instance = nullptr;
-}
-
-void VoynichDecoder::signalHandler(int signal) {
-    if (signal == SIGINT) {
-        signalReceived = true;
-        std::wcout << L"\n\nReceived Ctrl+C signal. Initiating graceful shutdown..." << std::endl;
-        
-        if (instance) {
-            instance->stop();
-        }
-    }
+VoynichDecoder::VoynichDecoder(const DecoderConfig& config) : config(config), nextMappingId(0), useCudaTranslation(false) {
 }
 
 bool VoynichDecoder::initialize() {
-    std::wcout << L"Initializing Voynich Decoder..." << std::endl;
-    
     // Load Voynich manuscript words
     if (!loadVoynichWords()) {
         std::wcerr << L"Failed to load Voynich words from " << config.voynichWordsPath.c_str() << std::endl;
@@ -40,35 +17,227 @@ bool VoynichDecoder::initialize() {
     
     std::wcout << L"Loaded " << voynichWords.size() << L" Voynich words" << std::endl;
     
-    // Initialize mapping generator
-    MappingGenerator::GeneratorConfig genConfig;
-    genConfig.blockSize = config.mappingBlockSize;
-    genConfig.stateFilePath = config.generatorStateFile;
-    genConfig.enableStateFile = true;
-    
-    mappingGenerator = std::make_unique<MappingGenerator>(genConfig);
-    
-    // Determine number of threads
-    if (config.numThreads == 0) {
-        config.numThreads = getOptimalThreadCount();
-    }
-    
-    std::wcout << L"Configured for " << config.numThreads << L" worker threads" << std::endl;
-    
-    // Determine translator implementation (static methods - no instance needed)
+    // Determine translator implementation
     useCudaTranslation = determineTranslatorImplementation(config.translatorType);
     
     std::wcout << L"Translator implementation: " << getTranslatorTypeName(config.translatorType).c_str() 
                << L" (" << (useCudaTranslation ? "CUDA (Static)" : "CPU (Static)") << L")" << std::endl;
-    std::wcout << L"Score threshold: " << std::fixed << std::setprecision(1) << config.scoreThreshold << std::endl;
-    std::wcout << L"Max mappings to process: " << (config.maxMappingsToProcess > 0 ? 
-        std::to_wstring(config.maxMappingsToProcess) : L"unlimited") << std::endl;
     
-    // Setup signal handling
-    setupSignalHandling();
+    // Initialize Hebrew validator
+    HebrewValidator::ValidatorConfig validatorConfig;
+    validatorConfig.hebrewLexiconPath = config.hebrewLexiconPath;
+    validatorConfig.scoreThreshold = config.scoreThreshold;
+    validatorConfig.resultsFilePath = config.resultsFilePath;
+    validatorConfig.enableResultsSaving = true;
     
-    std::wcout << L"Initialization complete. Press Ctrl+C to stop gracefully." << std::endl;
-    return true;
+    validator = std::make_unique<HebrewValidator>(validatorConfig);
+    
+    // Wait for Hebrew lexicon to load
+    while (!validator->isLexiconReady()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    return validator->isLexiconReady();
+}
+
+VoynichDecoder::ProcessingResult VoynichDecoder::processMapping(const WordSet& voynichWords, const Mapping& mapping, bool useCuda) {
+    ProcessingResult result;
+    result.mappingId = nextMappingId++;
+    
+    // Translate Voynich words to Hebrew using static method
+    WordSet translatedWords = StaticTranslator::translateWordSet(voynichWords, mapping, useCuda);
+    
+    // Serialize the mapping for saving
+    std::string mappingVisualization = mapping.serializeMappingVisualization();
+    std::vector<uint8_t> mappingData(mappingVisualization.begin(), mappingVisualization.end());
+    
+    // Validate translation against Hebrew lexicon
+    auto validationResult = validator->validateTranslationWithMapping(translatedWords, result.mappingId, mappingData);
+    
+    // Fill result structure
+    result.totalWords = validationResult.totalWords;
+    result.matchedWords = validationResult.matchedWords;
+    result.score = validationResult.score;
+    result.matchPercentage = validationResult.matchPercentage;
+    result.isHighScore = validationResult.isHighScore;
+    
+    return result;
+}
+
+VoynichDecoder::ProcessingResult VoynichDecoder::processMapping(const Mapping& mapping) {
+    return processMapping(voynichWords, mapping, useCudaTranslation);
+}
+
+void VoynichDecoder::processMappings(const std::vector<std::unique_ptr<Mapping>>& mappings, 
+                                   std::function<void(const ProcessingResult&)> resultCallback) {
+    for (const auto& mapping : mappings) {
+        auto result = processMapping(*mapping);
+        resultCallback(result);
+    }
+}
+
+void VoynichDecoder::processMappingBlock(MappingGenerator& generator, int threadId,
+                                       std::function<void(const ProcessingResult&)> resultCallback,
+                                       std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback,
+                                       std::function<bool()> shouldStopCallback) {
+    // Get next block of mappings
+    auto mappings = generator.getNextBlock(threadId);
+    if (mappings.empty()) {
+        return;
+    }
+    
+    // Check for early termination before starting block processing
+    if (shouldStopCallback && shouldStopCallback()) {
+        // Return without completing the block - it should remain PENDING for reassignment
+        return;
+    }
+    
+    // Use batch processing for CUDA, single processing for CPU
+    if (useCudaTranslation && mappings.size() > 1) {
+        // Process in chunks to avoid GPU memory overflow
+        const size_t CHUNK_SIZE = 10000; // Process 10K mappings at a time
+        for (size_t i = 0; i < mappings.size(); i += CHUNK_SIZE) {
+            if (shouldStopCallback && shouldStopCallback()) return;
+            
+            size_t endIdx = std::min(i + CHUNK_SIZE, mappings.size());
+            std::vector<std::unique_ptr<Mapping>> chunk;
+            chunk.reserve(endIdx - i);
+            
+            for (size_t j = i; j < endIdx; ++j) {
+                chunk.push_back(std::move(mappings[j]));
+            }
+            
+            processMappingsBatch(chunk, resultCallback, batchStatsCallback, threadId, shouldStopCallback);
+            
+            // Move the mappings back
+            for (size_t j = 0; j < chunk.size(); ++j) {
+                mappings[i + j] = std::move(chunk[j]);
+            }
+        }
+    } else {
+        // Process all mappings in the block one by one (CPU or single mapping)
+        for (auto& mapping : mappings) {
+            // Check if we should stop processing on every mapping for immediate response
+            if (shouldStopCallback && shouldStopCallback()) {
+                // Return without completing the block - it should remain PENDING for reassignment
+                return;
+            }
+            
+            auto result = processMapping(*mapping);
+            
+            // Update thread-local stats
+            threadStats.localMappingsProcessed++;
+            threadStats.localWordsValidated += result.totalWords;
+            
+            if (result.score > threadStats.localHighestScore) {
+                threadStats.localHighestScore = result.score;
+                threadStats.hasHighScore = true;
+            }
+            
+            // Report batch stats if needed (every 1 second)
+            reportBatchStatsIfNeeded(batchStatsCallback, threadId);
+            
+            resultCallback(result);
+        }
+    }
+    
+    // Mark block as completed
+    generator.completeCurrentBlock(threadId);
+}
+
+void VoynichDecoder::processMappingsBatch(const std::vector<std::unique_ptr<Mapping>>& mappings,
+                                         std::function<void(const ProcessingResult&)> resultCallback,
+                                         std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback,
+                                         int threadId,
+                                         std::function<bool()> shouldStopCallback) {
+    if (mappings.empty()) return;
+    
+    // Check for early termination
+    if (shouldStopCallback && shouldStopCallback()) {
+        return;
+    }
+    
+    // Prepare batch data for CUDA processing
+    size_t numWords = voynichWords.size();
+    size_t numMappings = mappings.size();
+    
+    // Convert word set to input matrix (same for all mappings)
+    auto inputMatrix = StaticTranslator::wordSetToMatrix(voynichWords);
+    
+    // Convert all mappings to transform matrices
+    std::vector<std::vector<std::vector<int>>> transformMatrices;
+    transformMatrices.reserve(numMappings);
+    
+    for (const auto& mapping : mappings) {
+        auto transformMatrix = mapping->getMappingMatrix();
+        transformMatrices.push_back(transformMatrix);
+    }
+    
+    // Perform batch CUDA matrix multiplication
+    std::vector<std::vector<std::vector<int>>> resultMatrices;
+    StaticTranslator::performBatchMatrixMultiplicationCuda(inputMatrix, transformMatrices, resultMatrices);
+    
+    // Process results for each mapping
+    for (size_t i = 0; i < mappings.size(); ++i) {
+        if (shouldStopCallback && shouldStopCallback()) return;
+        
+        // Convert result matrix back to WordSet
+        WordSet translatedWords = StaticTranslator::matrixToWordSet(
+            resultMatrices[i], voynichWords, Alphabet::HEBREW
+        );
+        
+        // Create ProcessingResult
+        ProcessingResult result;
+        result.mappingId = nextMappingId++;
+        
+        // Serialize the mapping for saving
+        std::string mappingVisualization = mappings[i]->serializeMappingVisualization();
+        std::vector<uint8_t> mappingData(mappingVisualization.begin(), mappingVisualization.end());
+        
+        // Validate translation against Hebrew lexicon
+        auto validationResult = validator->validateTranslationWithMapping(translatedWords, result.mappingId, mappingData);
+        
+        // Fill result structure
+        result.totalWords = validationResult.totalWords;
+        result.matchedWords = validationResult.matchedWords;
+        result.score = validationResult.score;
+        result.matchPercentage = validationResult.matchPercentage;
+        result.isHighScore = validationResult.isHighScore;
+        
+        // Update thread-local stats
+        threadStats.localMappingsProcessed++;
+        threadStats.localWordsValidated += result.totalWords;
+        
+        if (result.score > threadStats.localHighestScore) {
+            threadStats.localHighestScore = result.score;
+            threadStats.hasHighScore = true;
+        }
+        
+        // Report batch stats if needed (every 1 second)
+        reportBatchStatsIfNeeded(batchStatsCallback, threadId);
+        
+        resultCallback(result);
+    }
+}
+
+void VoynichDecoder::reportBatchStatsIfNeeded(std::function<void(int, uint64_t, uint64_t, double, bool)> batchStatsCallback, int threadId, bool force) {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - threadStats.lastReportTime).count();
+    
+    // Report every 1000ms (1 second) or when forced
+    if (force || elapsed >= 1000) {
+        if (threadStats.localMappingsProcessed > 0) {
+            batchStatsCallback(threadId, threadStats.localMappingsProcessed, threadStats.localWordsValidated, 
+                             threadStats.localHighestScore, threadStats.hasHighScore);
+            
+            // Reset thread-local counters
+            threadStats.localMappingsProcessed = 0;
+            threadStats.localWordsValidated = 0;
+            threadStats.localHighestScore = 0.0;
+            threadStats.hasHighScore = false;
+            threadStats.lastReportTime = now;
+        }
+    }
 }
 
 bool VoynichDecoder::loadVoynichWords() {
@@ -76,20 +245,7 @@ bool VoynichDecoder::loadVoynichWords() {
     return voynichWords.size() > 0;
 }
 
-size_t VoynichDecoder::getOptimalThreadCount() const {
-    size_t hardwareThreads = std::thread::hardware_concurrency();
-    return hardwareThreads > 0 ? hardwareThreads : 4;
-}
-
-void VoynichDecoder::setupSignalHandling() {
-    std::signal(SIGINT, signalHandler);
-}
-
-void VoynichDecoder::cleanupSignalHandling() {
-    std::signal(SIGINT, SIG_DFL);
-}
-
-bool VoynichDecoder::determineTranslatorImplementation(TranslatorType type) const {
+bool VoynichDecoder::determineTranslatorImplementation(TranslatorType type) {
     switch (type) {
         case TranslatorType::CPU:
             return false;  // Use CPU
@@ -123,238 +279,9 @@ std::string VoynichDecoder::getTranslatorTypeName(TranslatorType type) const {
     }
 }
 
-void VoynichDecoder::start() {
-    if (isRunning.load()) {
-        std::wcout << L"Decoder is already running!" << std::endl;
-        return;
+void VoynichDecoder::updateScoreThreshold(double newThreshold) {
+    config.scoreThreshold = newThreshold;
+    if (validator) {
+        validator->updateScoreThreshold(newThreshold);
     }
-    
-    shouldStop = false;
-    signalReceived = false;
-    isRunning = true;
-    
-    // Reset statistics
-    stats.totalMappingsProcessed = 0;
-    stats.totalWordsValidated = 0;
-    stats.highestScore = 0.0;
-    stats.highScoreCount = 0;
-    auto now = std::chrono::steady_clock::now();
-    stats.startTime = now;
-    stats.lastUpdateTime = now;
-    
-    std::wcout << L"Starting Voynich Decoder with " << config.numThreads << L" threads..." << std::endl;
-    
-    // Start worker threads
-    for (size_t i = 0; i < config.numThreads; ++i) {
-        workerThreads.emplace_back(&VoynichDecoder::workerThreadFunction, this, static_cast<int>(i));
-    }
-    
-    // Start status reporting thread
-    std::thread statusThread(&VoynichDecoder::statusReportingThread, this);
-    statusThread.detach();
-    
-    std::wcout << L"All threads started. Decoding in progress..." << std::endl;
-}
-
-void VoynichDecoder::stop() {
-    if (!isRunning.load()) {
-        return;
-    }
-    
-    shouldStop = true;
-    
-    // Wait for all worker threads to complete
-    for (auto& thread : workerThreads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    
-    workerThreads.clear();
-    isRunning = false;
-    
-    printFinalResults();
-}
-
-void VoynichDecoder::waitForCompletion() {
-    while (isRunning.load() && !shouldStop.load() && !signalReceived.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        
-        // Check if we've reached the maximum mappings limit
-        if (config.maxMappingsToProcess > 0 && 
-            stats.totalMappingsProcessed.load() >= config.maxMappingsToProcess) {
-            std::wcout << L"\nReached maximum mappings limit. Stopping..." << std::endl;
-            shouldStop = true;
-            break;
-        }
-    }
-    
-    stop();
-}
-
-void VoynichDecoder::workerThreadFunction(int threadId) {
-    try {
-        // No translator instance needed - using static methods
-        
-        HebrewValidator::ValidatorConfig validatorConfig;
-        validatorConfig.hebrewLexiconPath = config.hebrewLexiconPath;
-        validatorConfig.scoreThreshold = config.scoreThreshold;
-        validatorConfig.resultsFilePath = config.resultsFilePath;
-        validatorConfig.enableResultsSaving = true;
-        
-        HebrewValidator validator(validatorConfig);
-        
-        // Wait for Hebrew lexicon to load
-        while (!validator.isLexiconReady() && !shouldStop.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        if (shouldStop.load()) return;
-        
-        {
-            std::lock_guard<std::mutex> lock(printMutex);
-            std::wcout << L"Thread " << threadId << L" started" << std::endl;
-        }
-        
-        uint64_t localMappingsProcessed = 0;
-        
-        while (!shouldStop.load() && !signalReceived.load()) {
-            // Get next mapping
-            auto mapping = mappingGenerator->getNextMapping();
-            if (!mapping) {
-                // Check if generation is truly complete or just temporarily exhausted
-                if (mappingGenerator->isGenerationComplete()) {
-                    {
-                        std::lock_guard<std::mutex> lock(printMutex);
-                        std::wcout << L"Thread " << threadId << L" finished - no more mappings" << std::endl;
-                    }
-                    break;
-                } else {
-                    // Block is being refilled, wait a bit and try again
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    continue;
-                }
-            }
-            
-            // Create mapping ID for tracking
-            uint64_t mappingId = stats.totalMappingsProcessed.fetch_add(1);
-            
-            // Translate Voynich words to Hebrew using static method
-            WordSet translatedWords = StaticTranslator::translateWordSet(voynichWords, *mapping, useCudaTranslation);
-            
-            // Serialize the mapping for saving
-            std::string mappingVisualization = mapping->serializeMappingVisualization();
-            std::vector<uint8_t> mappingData(mappingVisualization.begin(), mappingVisualization.end());
-            
-            // Validate translation against Hebrew lexicon
-            auto result = validator.validateTranslationWithMapping(translatedWords, mappingId, mappingData);
-            
-            // Update statistics
-            localMappingsProcessed++;
-            stats.totalWordsValidated.fetch_add(result.totalWords);
-            
-            // Update highest score (thread-safe) - regardless of threshold
-            double currentHighest = stats.highestScore.load();
-            while (result.score > currentHighest && 
-                   !stats.highestScore.compare_exchange_weak(currentHighest, result.score)) {
-                // Loop until we successfully update or find a higher score
-            }
-            
-            // Only count as high score if above threshold (for file saving)
-            if (result.isHighScore) {
-                stats.highScoreCount.fetch_add(1);
-                
-                std::lock_guard<std::mutex> lock(printMutex);
-                std::wcout << L"*** HIGH SCORE *** Thread " << threadId 
-                           << L": Score=" << std::fixed << std::setprecision(2) << result.score
-                           << L", Matches=" << result.matchedWords << L"/" << result.totalWords
-                           << L" (" << std::fixed << std::setprecision(1) << result.matchPercentage << L"%)"
-                           << L", Mapping=" << mappingId << std::endl;
-            }
-            
-            // Check termination conditions
-            if (config.maxMappingsToProcess > 0 && 
-                stats.totalMappingsProcessed.load() >= config.maxMappingsToProcess) {
-                break;
-            }
-        }
-        
-        {
-            std::lock_guard<std::mutex> lock(printMutex);
-            std::wcout << L"Thread " << threadId << L" completed. Processed " 
-                       << localMappingsProcessed << L" mappings" << std::endl;
-        }
-        
-    } catch (const std::exception& e) {
-        std::lock_guard<std::mutex> lock(printMutex);
-        std::wcerr << L"Thread " << threadId << L" error: " << e.what() << std::endl;
-    }
-}
-
-void VoynichDecoder::statusReportingThread() {
-    while (isRunning.load() && !shouldStop.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(config.statusUpdateIntervalMs));
-        
-        if (!shouldStop.load()) {
-            printStatus();
-        }
-    }
-}
-
-void VoynichDecoder::printStatus() const {
-    std::lock_guard<std::mutex> lock(printMutex);
-    
-    auto currentStats = getCurrentStats();
-    double mappingsPerSec = currentStats.getMappingsPerSecond();
-    double elapsedMin = currentStats.getElapsedMinutes();
-    
-    std::wcout << L"[" << std::fixed << std::setprecision(1) << elapsedMin << L"min] "
-               << L"Mappings: " << currentStats.totalMappingsProcessed 
-               << L" (" << std::fixed << std::setprecision(1) << mappingsPerSec << L"/sec), "
-               << L"Highest Score: " << std::fixed << std::setprecision(2) << currentStats.highestScore << std::endl;
-}
-
-void VoynichDecoder::printFinalResults() const {
-    std::lock_guard<std::mutex> lock(printMutex);
-    
-    auto finalStats = getCurrentStats();
-    double totalMinutes = finalStats.getElapsedMinutes();
-    double avgMappingsPerSec = finalStats.getMappingsPerSecond();
-    
-    std::wcout << L"\n" << L"=" << std::wstring(60, L'=') << std::endl;
-    std::wcout << L"VOYNICH DECODER - FINAL RESULTS" << std::endl;
-    std::wcout << L"=" << std::wstring(60, L'=') << std::endl;
-    std::wcout << L"Total runtime: " << std::fixed << std::setprecision(1) << totalMinutes << L" minutes" << std::endl;
-    std::wcout << L"Mappings processed: " << finalStats.totalMappingsProcessed << std::endl;
-    std::wcout << L"Words validated: " << finalStats.totalWordsValidated << std::endl;
-    std::wcout << L"Average rate: " << std::fixed << std::setprecision(1) << avgMappingsPerSec << L" mappings/sec" << std::endl;
-    std::wcout << L"Highest score achieved: " << std::fixed << std::setprecision(2) << finalStats.highestScore << std::endl;
-    std::wcout << L"High-scoring results: " << finalStats.highScoreCount << std::endl;
-    
-    if (finalStats.highScoreCount > 0) {
-        std::wcout << L"Results saved to: " << config.resultsFilePath.c_str() << std::endl;
-    }
-    
-    std::wcout << L"=" << std::wstring(60, L'=') << std::endl;
-}
-
-VoynichDecoder::StatsSummary VoynichDecoder::getCurrentStats() const {
-    StatsSummary current;
-    current.totalMappingsProcessed = stats.totalMappingsProcessed.load();
-    current.totalWordsValidated = stats.totalWordsValidated.load();
-    current.highestScore = stats.highestScore.load();
-    current.highScoreCount = stats.highScoreCount.load();
-    current.startTime = stats.startTime;
-    current.lastUpdateTime = stats.lastUpdateTime;
-    return current;
-}
-
-void VoynichDecoder::runDecoding() {
-    if (!initialize()) {
-        std::wcerr << L"Failed to initialize decoder" << std::endl;
-        return;
-    }
-    
-    start();
-    waitForCompletion();
 }

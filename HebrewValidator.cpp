@@ -4,37 +4,22 @@
 #include <iomanip>
 #include <iostream>
 #include <algorithm>
-#include <shared_mutex>
 #include <thread>
 
-// Static member definitions
-std::shared_ptr<HebrewValidator::SharedLexicon> HebrewValidator::sharedLexicon = nullptr;
-std::once_flag HebrewValidator::lexiconInitFlag;
-
 HebrewValidator::HebrewValidator(const ValidatorConfig& config) : config(config) {
-    // Initialize shared lexicon (thread-safe, happens only once)
-    std::call_once(lexiconInitFlag, [&config]() {
-        sharedLexicon = std::make_shared<SharedLexicon>();
-        initializeSharedLexicon(config.hebrewLexiconPath);
-    });
+    // Initialize lexicon for this instance
+    initializeLexicon();
 }
 
-void HebrewValidator::initializeSharedLexicon(const std::string& lexiconPath) {
-    if (!sharedLexicon) return;
-    
-    std::wcout << L"Loading Hebrew lexicon from: " << lexiconPath.c_str() << std::endl;
-    
+bool HebrewValidator::initializeLexicon() {
     // Load Hebrew words
     WordSet hebrewWords;
-    hebrewWords.readFromFile(lexiconPath, Alphabet::HEBREW);
+    hebrewWords.readFromFile(config.hebrewLexiconPath, Alphabet::HEBREW);
     
     if (hebrewWords.size() == 0) {
-        std::wcerr << L"Warning: No Hebrew words loaded from " << lexiconPath.c_str() << std::endl;
-        sharedLexicon->isLoaded = true; // Mark as loaded even if empty to prevent retries
-        return;
+        lexicon.isLoaded = true; // Mark as loaded even if empty to prevent retries
+        return false;
     }
-    
-    std::unique_lock<std::shared_mutex> lock(sharedLexicon->lexiconMutex);
     
     // Convert Hebrew words to binary hashes and signatures
     for (const auto& word : hebrewWords) {
@@ -44,17 +29,15 @@ void HebrewValidator::initializeSharedLexicon(const std::string& lexiconPath) {
             uint32_t hash = binaryVectorToHash(binaryVector);
             uint64_t signature = binaryVectorToSignature(binaryVector);
             
-            sharedLexicon->binaryHashes.insert(hash);
-            sharedLexicon->binarySignatures.insert(signature);
+            lexicon.binaryHashes.insert(hash);
+            lexicon.binarySignatures.insert(signature);
         }
     }
     
-    sharedLexicon->wordCount = hebrewWords.size();
-    sharedLexicon->isLoaded = true;
+    lexicon.wordCount = hebrewWords.size();
+    lexicon.isLoaded = true;
     
-    std::wcout << L"Hebrew lexicon loaded: " << sharedLexicon->wordCount << L" words, "
-               << sharedLexicon->binaryHashes.size() << L" unique hashes, "
-               << sharedLexicon->binarySignatures.size() << L" unique signatures" << std::endl;
+    return true;
 }
 
 uint32_t HebrewValidator::binaryVectorToHash(const std::vector<int>& binaryVector) {
@@ -104,10 +87,7 @@ HebrewValidator::ValidationResult HebrewValidator::validateTranslation(const Wor
         return result;
     }
     
-    // Get shared read access to lexicon
-    std::shared_lock<std::shared_mutex> lock(sharedLexicon->lexiconMutex);
-    
-    // Validate each translated word
+    // Validate each translated word (no locking needed - instance lexicon)
     for (const auto& word : translatedWords) {
         const auto& binaryVector = word.getBinaryMatrix();
         
@@ -116,8 +96,8 @@ HebrewValidator::ValidationResult HebrewValidator::validateTranslation(const Wor
             uint64_t signature = binaryVectorToSignature(binaryVector);
             
             // O(1) hash lookup with signature verification for collision detection
-            if (sharedLexicon->binaryHashes.find(hash) != sharedLexicon->binaryHashes.end() &&
-                sharedLexicon->binarySignatures.find(signature) != sharedLexicon->binarySignatures.end()) {
+            if (lexicon.binaryHashes.find(hash) != lexicon.binaryHashes.end() &&
+                lexicon.binarySignatures.find(signature) != lexicon.binarySignatures.end()) {
                 result.matchedWords++;
             }
         }
@@ -219,22 +199,16 @@ bool HebrewValidator::appendResultToFile(const ValidationEntry& entry) {
 }
 
 bool HebrewValidator::isLexiconReady() const {
-    return sharedLexicon && sharedLexicon->isLoaded.load();
+    return lexicon.isLoaded;
 }
 
 HebrewValidator::LexiconStats HebrewValidator::getLexiconStats() const {
     LexiconStats stats;
     
-    if (!sharedLexicon) {
-        return stats;
-    }
-    
-    std::shared_lock<std::shared_mutex> lock(sharedLexicon->lexiconMutex);
-    
-    stats.wordCount = sharedLexicon->wordCount;
-    stats.uniqueHashes = sharedLexicon->binaryHashes.size();
-    stats.uniqueSignatures = sharedLexicon->binarySignatures.size();
-    stats.isLoaded = sharedLexicon->isLoaded.load();
+    stats.wordCount = lexicon.wordCount;
+    stats.uniqueHashes = lexicon.binaryHashes.size();
+    stats.uniqueSignatures = lexicon.binarySignatures.size();
+    stats.isLoaded = lexicon.isLoaded;
     
     return stats;
 }

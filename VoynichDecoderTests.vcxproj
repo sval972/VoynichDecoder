@@ -159,6 +159,7 @@
     <ClCompile Include="Tests\MappingGeneratorTests.cpp" />
     <ClCompile Include="Tests\MinimalTests.cpp" />
     <ClCompile Include="Tests\PerfectScoreIntegrationTest.cpp" />
+    <ClCompile Include="Tests\BatchCudaTests.cpp" />
     <ClCompile Include="Tests\TestMain.cpp" />
     <ClCompile Include="Tests\TestFramework.cpp" />
     <ClCompile Include="MappingGenerator.cpp" />
@@ -169,6 +170,8 @@
     <CudaCompile Include="StaticCudaTranslator.cu" />
     <ClCompile Include="HebrewValidator.cpp" />
     <ClCompile Include="WordSet.cpp" />
+    <ClCompile Include="ThreadManager.cpp" />
+    <ClCompile Include="StatsProvider.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Tests\TestFramework.h" />
@@ -179,6 +182,8 @@
     <ClInclude Include="StaticTranslator.h" />
     <ClInclude Include="HebrewValidator.h" />
     <ClInclude Include="WordSet.h" />
+    <ClInclude Include="ThreadManager.h" />
+    <ClInclude Include="StatsProvider.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets" Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets')" />
