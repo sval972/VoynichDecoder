@@ -24,7 +24,7 @@ namespace {
     constexpr size_t MAX_BATCH_MAPPINGS = 50000; // Process up to 50K mappings at once (reasonable GPU memory usage)
     constexpr size_t MATRIX_DIM = 27;
     
-    // Optimized CUDA kernel with shared memory and better memory access
+    // Simplified CUDA kernel without shared memory to debug the issue
     __global__ void binaryMatrixMultiplyKernel(
         const int* __restrict__ inputMatrix,      // N x 27 matrix (flattened)
         const int* __restrict__ transformMatrix,  // 27 x 27 matrix (flattened) 
@@ -32,34 +32,25 @@ namespace {
         int numWords,                             // N (number of words)
         int matrixSize                            // 27 (matrix dimension)
     ) {
-        // Shared memory for transform matrix (27x27 = 729 ints = 2.9KB)
-        __shared__ int sharedTransform[27 * 27];
-        
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
-        int tid = threadIdx.y * blockDim.x + threadIdx.x;
-        int threadsPerBlock = blockDim.x * blockDim.y;
-        
-        // Collaboratively load transform matrix into shared memory
-        for (int i = tid; i < 27 * 27; i += threadsPerBlock) {
-            sharedTransform[i] = transformMatrix[i];
-        }
-        __syncthreads();
         
         if (row < numWords && col < matrixSize) {
             int sum = 0;
             
-            // Compute dot product using shared memory transform matrix
+            // Compute dot product using global memory (same as CPU implementation)
             const int* inputRow = &inputMatrix[row * matrixSize];
             
-            // Unroll loop for better performance (27 iterations)
-            #pragma unroll
-            for (int k = 0; k < 27; ++k) {
-                sum += inputRow[k] & sharedTransform[k * 27 + col];
+            // Add bounds checking to prevent memory access errors
+            if (row * matrixSize + col < numWords * matrixSize) {
+                // Exact same logic as CPU version
+                for (int k = 0; k < 27; ++k) {
+                    sum += inputRow[k] & transformMatrix[k * 27 + col];
+                }
+                
+                // For binary matrices, any non-zero result becomes 1
+                resultMatrix[row * matrixSize + col] = (sum > 0) ? 1 : 0;
             }
-            
-            // For binary matrices, any non-zero result becomes 1
-            resultMatrix[row * matrixSize + col] = (sum > 0) ? 1 : 0;
         }
     }
     
@@ -77,27 +68,17 @@ namespace {
         
         if (mappingId >= numMappings || row >= numWords || col >= 27) return;
         
-        // Shared memory for this mapping's transform matrix (27x27 = 729 ints = 2.9KB)
-        __shared__ int sharedTransform[27 * 27];
-        
-        int tid = threadIdx.y * blockDim.x + threadIdx.x;
-        int threadsPerBlock = blockDim.x * blockDim.y;
-        
-        // Collaboratively load transform matrix for this mapping into shared memory
+        // Use global memory directly instead of shared memory to avoid loading bugs
+        // This ensures we get exactly the same results as the CPU implementation
         const int* thisTransform = &transformBatch[mappingId * 27 * 27];
-        for (int i = tid; i < 27 * 27; i += threadsPerBlock) {
-            sharedTransform[i] = thisTransform[i];
-        }
-        __syncthreads();
         
         // Compute matrix multiplication for this specific mapping
         int sum = 0;
         const int* inputRow = &inputMatrix[row * 27];
         
-        // Unroll the inner loop for better performance
-        #pragma unroll
+        // Exact same logic as CPU version - no shared memory complications
         for (int k = 0; k < 27; ++k) {
-            sum += inputRow[k] & sharedTransform[k * 27 + col];
+            sum += inputRow[k] & thisTransform[k * 27 + col];
         }
         
         // Store result for this mapping
@@ -221,8 +202,14 @@ void StaticTranslator::performMatrixMultiplicationCuda(
     int* d_transformMatrix = static_cast<int*>(g_deviceTransformPool);
     int* d_resultMatrix = static_cast<int*>(g_deviceResultPool);
     
+    // Initialize result matrix to zero to ensure clean state
+    cudaError_t error = cudaMemset(d_resultMatrix, 0, resultSize);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("CUDA result memset failed: " + std::string(cudaGetErrorString(error)));
+    }
+    
     // Copy data to device (async would be better, but sync for simplicity)
-    cudaError_t error = cudaMemcpy(d_inputMatrix, flatInput.data(), inputSize, cudaMemcpyHostToDevice);
+    error = cudaMemcpy(d_inputMatrix, flatInput.data(), inputSize, cudaMemcpyHostToDevice);
     if (error != cudaSuccess) {
         throw std::runtime_error("CUDA input copy failed: " + std::string(cudaGetErrorString(error)));
     }
@@ -232,10 +219,12 @@ void StaticTranslator::performMatrixMultiplicationCuda(
         throw std::runtime_error("CUDA transform copy failed: " + std::string(cudaGetErrorString(error)));
     }
     
-    // Optimize kernel launch parameters for better occupancy
-    dim3 blockSize(32, 8);  // 256 threads per block (better than 16x16=256)
-    dim3 gridSize((MATRIX_DIM + blockSize.x - 1) / blockSize.x, 
-                  (numWords + blockSize.y - 1) / blockSize.y);
+    // Fix kernel launch parameters - ensure correct grid dimensions for all data
+    dim3 blockSize(16, 16);  // 256 threads per block 
+    dim3 gridSize(
+        (MATRIX_DIM + blockSize.x - 1) / blockSize.x, 
+        (static_cast<int>(numWords) + blockSize.y - 1) / blockSize.y
+    );
     
     // Launch kernel
     binaryMatrixMultiplyKernel<<<gridSize, blockSize>>>(
